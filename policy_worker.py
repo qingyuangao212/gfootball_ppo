@@ -1,7 +1,7 @@
 from typing import Union, List
 
 import torch.nn
-from algorithm.policy import Policy, RolloutRequest
+# from algorithm.policy import Policy, RolloutRequest
 
 import torch
 import torch.nn.functional as F
@@ -9,42 +9,55 @@ from torch.distributions import Categorical
 from torch.nn import Sequential
 
 
-class PpoPolicyWorker(Policy):
+class PpoPolicyWorker:
     """
     Only implemented for discrete action space
     """
 
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dim, device='cpu'):
+        super().__init__()
+        self.device = None
         self.model = ActorCritic(state_dim, action_dim)
+        self.to_device(device)  # initiate attribute self.device
 
     @property
     def net(self) -> Union[List[torch.nn.Module], torch.nn.Module]:
         return [self.model.get_actor(), self.model.get_critic()]
 
-    def analyze(self, states, **kwargs):
-        """ Generate outputs required for loss computation during training,
-                    e.g. value target and action distribution entropies.
+    def analyze(self, states):
+        """
+
         Args:
-            sample (namedarraytuple): list of states + list of actions? list of (s, a,  r, p(a)) tuples?
+            states: tensor
+
         Returns:
-            1. policy softmax for each s (for entire action space)
-            2. value_loss: v (r+gamma*v'-v for each (s, a) pair in the trajectory)
-            :param states:
+            logits: logit output from actor_model; tensor of shape (len_states, action_space_dim)
+            values: output from critic_model; tensor of shape (len_states, 1)
         """
-        target_probs, values = self.model.forward(torch.tensor(states))
-        return target_probs, values
+        states = states.to(self.device)
+        logits, values = self.model(states)
+        return logits, values
 
-    def rollout(self, states, **kwargs):
+    def rollout(self, states):
         """
 
-        :param states:
-        :param kwargs:
-        :return: action and probability for action_space
+        Args:
+            states: numpy
+
+        Returns:
+            action: tensor
+            policy_prob: tensor
         """
+        states = states.to(self.device)
         with torch.no_grad():
-            policy_probs = self.model.actor_forward(torch.tensor(states, requires_grad=False)) # this right?
-            action = Categorical(policy_probs).sample()
-        return action, policy_probs[action]
+            logits = self.model.actor_forward(states)  # this right?
+            dist = Categorical(logits=logits)
+            action = dist.sample()
+        return action, dist.log_prob(action)
+
+    def to_device(self, device='cpu'):
+        self.device = device
+        self.model.to(device)
 
 
 class ActorCritic(torch.nn.Module):
@@ -53,14 +66,13 @@ class ActorCritic(torch.nn.Module):
     """
 
     def __init__(self, state_dim, action_dim):
-        super.__init__()
+        super().__init__()
         self.actor = torch.nn.Sequential(torch.nn.LayerNorm(state_dim),
                                          torch.nn.Linear(state_dim, 64, ),
                                          torch.nn.ReLU(),
                                          torch.nn.Linear(64, 32),
                                          torch.nn.ReLU(),
                                          torch.nn.Linear(32, action_dim),
-                                         torch.nn.Functional.softmax()
                                          )
         self.critic = torch.nn.Sequential(torch.nn.LayerNorm(state_dim),
                                           torch.nn.Linear(state_dim, 64, ),
